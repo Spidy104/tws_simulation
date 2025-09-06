@@ -1,0 +1,72 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.egg-info/
+.eggs/
+*.egg
+*.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+tws/
+
+# Pip / Poetry / setuptools caches
+pip-wheel-metadata/
+dist/
+build/
+*.egg-info/
+.installed.cfg
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+*.ipynb~
+.python_history
+
+# ---- C++ / pybind11 ----
+# Object files, shared libs, static libs
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+
+# Build dirs
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+Makefile
+cmake_install.cmake
+*.cmake
+
+# ---- Editors / IDEs ----
+# VSCode
+.vscode/
+*.code-workspace
+
+# CLion / JetBrains
+.idea/
+*.iml
+
+# vim / emacs
+*~
+.*.swp
+.*.swo
+
+# ---- Project outputs ----
+outputs/
+assets/
+*.wav
+
+# ---- Misc ----
+.DS_Store
+Thumbs.db
