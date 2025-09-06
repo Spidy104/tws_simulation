@@ -44,7 +44,6 @@ cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
 compile_commands.json
-Makefile
 cmake_install.cmake
 *.cmake
 
@@ -62,10 +61,6 @@ cmake_install.cmake
 .*.swp
 .*.swo
 
-# ---- Project outputs ----
-outputs/
-assets/
-*.wav
 
 # ---- Misc ----
 .DS_Store
