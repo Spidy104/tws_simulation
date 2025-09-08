@@ -1,75 +1,37 @@
-# Makefile — build pybind11 extensions and place .so into src/ for Python imports
-PYBIND11_INCLUDES := $(shell python3 -m pybind11 --includes 2>/dev/null || echo "")
-PY_LDFLAGS        := $(shell python3-config --ldflags 2>/dev/null || echo "")
-EXT_SUFFIX        := $(shell python3 -c "import sysconfig as s; print(s.get_config_var('EXT_SUFFIX') or '.so')" 2>/dev/null)
+# Simple Makefile for building pybind11 C++ extensions into src/
+# Usage:
+#   make         # build all modules
+#   make clean   # remove build artifacts
+#   make install # copy .so into python/ for imports
 
-CXX      ?= g++
-CXXSTD   ?= -std=c++20
-CXXFLAGS ?= -O3 -Wall -fPIC $(CXXSTD)
-LDFLAGS  ?= -shared
-LDLIBS   ?= $(PY_LDFLAGS)
+CXX      = g++
+CXXFLAGS = -O3 -Wall -std=c++20 -fPIC
+LDFLAGS  = -shared
 
-SRC_DIR := src
-BUILD_DIR := build
-MODULES := wav_generator audio_processor battery_model
+PYTHON   = python3
+PY_INCLUDES = $(shell $(PYTHON) -m pybind11 --includes)
+PY_LDFLAGS  = $(shell $(PYTHON)-config --ldflags)
+EXT_SUFFIX  = $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-# object lists (one .o per module, placed in build/)
-OBJS := $(patsubst %, $(BUILD_DIR)/%.o, $(MODULES))
-SRCS := $(patsubst %, $(SRC_DIR)/%.cpp, $(MODULES))
-HDRS := $(patsubst %, $(SRC_DIR)/%.hpp, $(MODULES))
+SRC_DIR  = src
+BUILD_DIR= build
+PY_DIR   = python
 
-.PHONY: all clean test dirs
+MODULES  = wav_generator audio_processor battery_model
 
-all: dirs $(patsubst %, $(SRC_DIR)/%$(EXT_SUFFIX), $(MODULES))
+.PHONY: all clean install
 
-dirs:
-	@mkdir -p $(BUILD_DIR) outputs assets logs
+all: $(MODULES)
 
-# helpful message if pybind11 isn't available
-check_pybind11:
-ifndef PYBIND11_INCLUDES
-	@echo "Warning: python3 -m pybind11 --includes failed. Ensure pybind11 is installed for headers to be found."
-endif
-
-# compile rules: compile .cpp to .o (depend on corresponding .hpp if present)
-# If a header is missing we still compile, so use a pattern rule with optional header dependency
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(SRC_DIR)/%.hpp
-	@echo "[CXX] $<"
-	$(CXX) $(CXXFLAGS) $(PYBIND11_INCLUDES) -I$(SRC_DIR) -c $< -o $@
-
-# fallback rule: if header missing, still compile
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
-	@echo "[CXX] $< (no header dependency)"
-	$(CXX) $(CXXFLAGS) $(PYBIND11_INCLUDES) -I$(SRC_DIR) -c $< -o $@
-
-# link wav_generator with libsndfile (if needed)
-$(SRC_DIR)/wav_generator$(EXT_SUFFIX): $(BUILD_DIR)/wav_generator.o
-	@echo "[LINK] -> $@"
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS) -lsndfile
-
-# link others (no extra libs by default)
-$(SRC_DIR)/audio_processor$(EXT_SUFFIX): $(BUILD_DIR)/audio_processor.o
-	@echo "[LINK] -> $@"
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-
-$(SRC_DIR)/battery_model$(EXT_SUFFIX): $(BUILD_DIR)/battery_model.o
-	@echo "[LINK] -> $@"
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+$(MODULES):
+	@mkdir -p $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(PY_INCLUDES) -I$(SRC_DIR) -c $(SRC_DIR)/$@.cpp -o $(BUILD_DIR)/$@.o
+	$(CXX) $(LDFLAGS) -o $(SRC_DIR)/$@$(EXT_SUFFIX) $(BUILD_DIR)/$@.o $(PY_LDFLAGS) -lsndfile
 
 clean:
-	@echo "Cleaning..."
 	rm -rf $(BUILD_DIR)/*
-	# remove generated Python extension files in src/ that match module names + suffix
-	@for m in $(MODULES); do \
-	  f="$(SRC_DIR)/$$m$(EXT_SUFFIX)"; \
-	  if [ -f $$f ]; then echo "rm $$f"; rm -f $$f; fi; \
-	done
+	rm -f $(SRC_DIR)/*$(EXT_SUFFIX)
 
-# test: run python test (python/test_wav.py) with PYTHONPATH pointing at build and python/
-test: all
-	@PYTHONPATH=python:$(CURDIR) python3 python/test_wav.py
-
-.PHONY: run-gui
-run-gui: all
-	@echo "Running GUI with PYTHONPATH=python:$(CURDIR)"
-	@PYTHONPATH=python:$(CURDIR) python3 python/gui.py
+install: all
+	@mkdir -p $(PY_DIR)
+	cp $(SRC_DIR)/*$(EXT_SUFFIX) $(PY_DIR)/

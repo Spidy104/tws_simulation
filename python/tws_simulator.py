@@ -1,21 +1,8 @@
-# tws_simulator.py
 """
-Lightweight Python implementation of a TWSSimulator-like interface.
+tws_simulator.py (updated)
 
-This is intentionally pure-Python and aimed at local development / testing.
-It implements the methods and attributes expected by the GUI:
-- TWSSimulator(sample_rate=44100)
-- generate_wav(filename, freq_left=440, freq_right=880, duration=2.0)   # tone generator
-- generate_anc_wav(filename, signal_freq=440, noise_freq=200, ...)
-- process_audio() -> (left, right)
-- save_output(left, right, out_l_path, out_r_path)
-- get_battery_levels() -> (master_pct, slave_pct)
-
-It also exposes the following writable attributes for the GUI:
-- packet_loss_prob    # 0.0..1.0
-- jitter_ms           # integer/float
-- anc_enabled         # bool
-- sample_rate         # int
+A TWSSimulator-like interface that prefers C++ modules when available.
+Keeps the same public API as the original pure-Python version.
 """
 
 from __future__ import annotations
@@ -33,31 +20,66 @@ try:
 except Exception:
     HAVE_SCIPY = False
 
+# Try to import C++ modules; fall back gracefully
+_HAVE_CPP = True
+try:
+    import audio_processor
+    import battery_model
+    import wav_generator
+except Exception as e:
+    _HAVE_CPP = False
+    _cpp_err = e
+    warnings.warn(f"C++ modules not loaded; using pure-Python simulator. Reason: {e}")
+
 __all__ = ["TWSSimulator"]
 
 @dataclass
 class TWSSimulator:
-    """
-    Simple simulator class suitable for the GUI.
-
-    Designed to be a direct drop-in replacement for development/testing.
-    Not intended for production-quality signal processing.
-    """
     sample_rate: int = 44100
 
-    # runtime-configurable attributes (GUI will set these)
-    packet_loss_prob: float = 0.0   # 0.0 .. 1.0
-    jitter_ms: float = 0.0          # jitter magnitude in milliseconds
+    packet_loss_prob: float = 0.0
+    jitter_ms: float = 0.0
     anc_enabled: bool = False
 
-    # internal storage
     _left: Optional[np.ndarray] = None
     _right: Optional[np.ndarray] = None
-    _battery_master: float = 100.0
-    _battery_slave: float = 100.0
+
+    # internal battery objects (C++ BatteryModel or fallback numeric)
+    _battery_master_obj: Optional[object] = None
+    _battery_slave_obj: Optional[object] = None
 
     def __post_init__(self):
-        # start a background thread to simulate battery drain (low-cost thread)
+        # instantiate C++ objects if available
+        if _HAVE_CPP:
+            try:
+                # AudioProcessor(filter_len, mu, seed)
+                self._ap = audio_processor.AudioProcessor(32, 0.1, 42)
+            except Exception:
+                self._ap = None
+                warnings.warn("Failed to create audio_processor.AudioProcessor; will use Python processing.")
+
+            try:
+                self._battery_master_obj = battery_model.BatteryModel(100.0, 100.0)
+                self._battery_slave_obj = battery_model.BatteryModel(100.0, 100.0)
+            except Exception:
+                self._battery_master_obj = None
+                self._battery_slave_obj = None
+                warnings.warn("Failed to instantiate battery_model.BatteryModel; battery features limited.")
+
+            try:
+                # wav_generator.WavGenerator(sample_rate, duration)
+                # keep a generator with default duration for convenience
+                self._wavgen = wav_generator.WavGenerator(self.sample_rate, 2.0)
+            except Exception:
+                self._wavgen = None
+                warnings.warn("Failed to instantiate wav_generator.WavGenerator.")
+        else:
+            self._ap = None
+            self._battery_master_obj = None
+            self._battery_slave_obj = None
+            self._wavgen = None
+
+        # battery thread for UI realism
         self._battery_lock = threading.Lock()
         self._battery_stop = threading.Event()
         self._battery_thread = threading.Thread(target=self._battery_worker, daemon=True)
@@ -68,71 +90,137 @@ class TWSSimulator:
     # -------------------------
     def generate_wav(self, filename: str, freq_left: float = 440.0, freq_right: float = 880.0,
                      duration: float = 2.0) -> None:
-        """
-        Generate a simple stereo tone and store it internally.
-        filename: path where the sim *may* save an input file (ignored but accepted).
-        freq_left, freq_right: frequencies for each channel.
-        duration: seconds
-        """
-        if duration <= 0:
+        """Generate a simple stereo tone and store internally. If C++ wav_generator is available, use it."""
+        dur = float(duration)
+        if dur <= 0:
             raise ValueError("duration must be > 0")
-        t = np.linspace(0, duration, int(self.sample_rate * duration), endpoint=False)
+
+        if _HAVE_CPP and self._wavgen is not None:
+            try:
+                # re-create generator with desired duration
+                self._wavgen = wav_generator.WavGenerator(self.sample_rate, dur)
+                self._wavgen.generate_stereo_wav(filename, float(freq_left), float(freq_right), 0.6)
+                wavdata = self._wavgen.read_wav(filename)
+                self._left, self._right = self._wavdata_to_arrays(wavdata)
+                return
+            except Exception as e:
+                warnings.warn(f"C++ wav generation failed; falling back to numpy: {e}")
+
+        # fallback
+        t = np.linspace(0, dur, int(self.sample_rate * dur), endpoint=False)
         left = 0.6 * np.sin(2.0 * np.pi * float(freq_left) * t)
         right = 0.6 * np.sin(2.0 * np.pi * float(freq_right) * t)
         self._left = left.astype(np.float32)
         self._right = right.astype(np.float32)
 
+        # try to save to filename using scipy if available
+        if filename and HAVE_SCIPY:
+            left_i16 = (np.clip(self._left, -1.0, 1.0) * 32767).astype(np.int16)
+            right_i16 = (np.clip(self._right, -1.0, 1.0) * 32767).astype(np.int16)
+            stereo = np.stack((left_i16, right_i16), axis=1)
+            wavfile.write(filename, self.sample_rate, stereo)
+
     def generate_anc_wav(self, filename: str, signal_freq: float = 440.0, noise_freq: float = 200.0,
                          signal_amp: float = 0.8, noise_amp: float = 0.3, duration: float = 2.0) -> None:
-        """
-        Generate a simple ANC test waveform: left=signal+noise, right=noise.
-        """
-        if duration <= 0:
+        """Generate ANC test waveform: left=signal+noise, right=noise."""
+        dur = float(duration)
+        if dur <= 0:
             raise ValueError("duration must be > 0")
-        t = np.linspace(0, duration, int(self.sample_rate * duration), endpoint=False)
-        signal = signal_amp * np.sin(2.0 * np.pi * signal_freq * t)
-        noise = noise_amp * np.sin(2.0 * np.pi * noise_freq * t)
+
+        if _HAVE_CPP and self._wavgen is not None:
+            try:
+                self._wavgen = wav_generator.WavGenerator(self.sample_rate, dur)
+                self._wavgen.generate_anc_wav(filename, float(signal_freq), float(noise_freq),
+                                              float(signal_amp), float(noise_amp))
+                wavdata = self._wavgen.read_wav(filename)
+                self._left, self._right = self._wavdata_to_arrays(wavdata)
+                return
+            except Exception as e:
+                warnings.warn(f"C++ ANC WAV generation failed; falling back to numpy: {e}")
+
+        # fallback generation
+        t = np.linspace(0, dur, int(self.sample_rate * dur), endpoint=False)
+        signal = float(signal_amp) * np.sin(2.0 * np.pi * float(signal_freq) * t)
+        noise = float(noise_amp) * np.sin(2.0 * np.pi * float(noise_freq) * t)
         self._left = (signal + noise).astype(np.float32)
         self._right = noise.astype(np.float32)
 
     def load_input(self, filename: str) -> None:
-        """
-        Optionally load an input WAV (not required). If scipy is not available, this is a no-op.
-        """
+        """Load input WAV. If C++ wav_generator.read_wav available prefer it, else use scipy."""
+        if _HAVE_CPP and self._wavgen is not None:
+            try:
+                wavdata = self._wavgen.read_wav(filename)
+                self._left, self._right = self._wavdata_to_arrays(wavdata)
+                return
+            except Exception as e:
+                warnings.warn(f"C++ read_wav failed; falling back to scipy: {e}")
+
         if not HAVE_SCIPY:
             warnings.warn("scipy not available: load_input() is a no-op")
             return
+
         sr, data = wavfile.read(filename)
         if sr != self.sample_rate:
-            warnings.warn("sample rate mismatch: file sr=%d sim sr=%d; data will be resampled naively" % (sr, self.sample_rate))
-            # naive resampling: nearest neighbor length scaling (not high-quality)
+            warnings.warn(f"sample rate mismatch: file sr={sr} sim sr={self.sample_rate}; naive resample will be applied")
             factor = int(round(self.sample_rate / sr))
             data = np.repeat(data, factor, axis=0)
-        # normalize and split to float32 stereo
+
         data = data.astype(np.float32)
         if data.ndim == 1:
-            left = right = data / np.max(np.abs(data) + 1e-12)
+            left = right = data / (np.max(np.abs(data)) + 1e-12)
         else:
             left = data[:, 0] / (np.max(np.abs(data[:, 0])) + 1e-12)
             right = data[:, 1] / (np.max(np.abs(data[:, 1])) + 1e-12)
         self._left = left.astype(np.float32)
         self._right = right.astype(np.float32)
 
+    def _wavdata_to_arrays(self, wavdata) -> Tuple[np.ndarray, np.ndarray]:
+        samples = np.asarray(wavdata.samples, dtype=np.float32)
+        channels = int(wavdata.channels)
+        if channels == 1:
+            return samples, samples
+        elif channels == 2:
+            samples = samples.reshape((-1, 2))
+            return samples[:, 0].astype(np.float32), samples[:, 1].astype(np.float32)
+        else:
+            raise RuntimeError("Unsupported channel count in WAV")
+
     # -------------------------
     # Processing & effects
     # -------------------------
     def process_audio(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Apply configured packet loss and jitter to the internally stored audio and return (left, right).
-        If no internal audio present, returns two empty arrays.
-        """
+        """Apply packet loss, jitter and optional ANC using C++ audio_processor if available."""
         if self._left is None or self._right is None:
             return (np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32))
 
         L = self._left.copy()
         R = self._right.copy()
 
-        # packet loss: randomly zero samples (simple sample-wise drop to emulate packet loss)
+        # Ensure float32 numpy arrays
+        L = np.asarray(L, dtype=np.float32)
+        R = np.asarray(R, dtype=np.float32)
+
+        # Try C++ path first
+        if _HAVE_CPP and self._ap is not None:
+            try:
+                if self.packet_loss_prob > 0.0:
+                    L = np.asarray(self._ap.apply_packet_loss(L, float(self.packet_loss_prob), int(self.sample_rate), 20), dtype=np.float32)
+                    R = np.asarray(self._ap.apply_packet_loss(R, float(self.packet_loss_prob), int(self.sample_rate), 20), dtype=np.float32)
+
+                if self.jitter_ms > 0.0:
+                    L = np.asarray(self._ap.apply_jitter(L, float(self.jitter_ms), int(self.sample_rate), 20), dtype=np.float32)
+                    R = np.asarray(self._ap.apply_jitter(R, float(self.jitter_ms), int(self.sample_rate), 20), dtype=np.float32)
+
+                if self.anc_enabled:
+                    # apply_anc returns processed left (error) as numpy array
+                    L = np.asarray(self._ap.apply_anc(L, R), dtype=np.float32)
+                    L = np.clip(L, -1.0, 1.0)
+
+                return (L.astype(np.float32), R.astype(np.float32))
+            except Exception as e:
+                warnings.warn(f"C++ processing failed; falling back to Python path: {e}")
+
+        # Pure-Python fallback (same as your previous implementation)
         p = float(self.packet_loss_prob)
         if p > 0.0:
             if p < 0.0 or p > 1.0:
@@ -141,7 +229,6 @@ class TWSSimulator:
             L = L * mask
             R = R * mask
 
-        # jitter: block-wise shifting of samples by a small random offset
         jms = float(self.jitter_ms)
         if jms > 0.0:
             max_shift = int(round((jms / 1000.0) * self.sample_rate))
@@ -154,8 +241,6 @@ class TWSSimulator:
                     j = min(i + block, L.size)
                     shift = np.random.randint(-max_shift, max_shift + 1)
                     dst0 = i + shift
-                    dst1 = dst0 + (j - i)
-                    # compute overlap with [0, L.size)
                     dst_start = max(dst0, 0)
                     src_start = max(0, -dst0)
                     copy_len = min(L.size - dst_start, (j - i) - src_start)
@@ -166,10 +251,7 @@ class TWSSimulator:
                 L = outL
                 R = outR
 
-        # simple ANC behavior (if enabled, subtract right from left small scale)
         if self.anc_enabled:
-            # naive cancellation: attempt to subtract right from left scaled
-            # this is purely illustrative and not real ANC
             L = L - 0.3 * R
             L = np.clip(L, -1.0, 1.0)
 
@@ -179,10 +261,6 @@ class TWSSimulator:
     # IO
     # -------------------------
     def save_output(self, left: np.ndarray, right: np.ndarray, out_l: str, out_r: str) -> None:
-        """
-        Save left & right arrays to WAV files. Uses scipy if available; else raises.
-        left/right expected float arrays in [-1,1].
-        """
         if not HAVE_SCIPY:
             raise RuntimeError("scipy not available: cannot save WAV files from simulator")
         left_i16 = (np.clip(left, -1.0, 1.0) * 32767).astype(np.int16)
@@ -190,13 +268,7 @@ class TWSSimulator:
         wavfile.write(out_l, self.sample_rate, left_i16)
         wavfile.write(out_r, self.sample_rate, right_i16)
 
-    # -------------------------
-    # Playback convenience (optional)
-    # -------------------------
     def play_audio(self, left: np.ndarray, right: np.ndarray) -> None:
-        """
-        Convenience wrapper using sounddevice if present. Non-blocking behaviour not guaranteed.
-        """
         try:
             import sounddevice as sd  # type: ignore
         except Exception:
@@ -212,25 +284,38 @@ class TWSSimulator:
     # Battery simulation
     # -------------------------
     def _battery_worker(self) -> None:
-        """
-        Small background thread to slowly decrease battery levels while the process runs.
-        This is harmless and lightweight.
-        """
         while not self._battery_stop.is_set():
             time.sleep(5.0)
             with self._battery_lock:
-                # degrade slowly; clip [0, 100]
-                self._battery_master = max(0.0, self._battery_master - 0.05)
-                self._battery_slave = max(0.0, self._battery_slave - 0.03)
+                if _HAVE_CPP and self._battery_master_obj is not None and self._battery_slave_obj is not None:
+                    try:
+                        # small time step
+                        self._battery_master_obj.update(5.0, bool(self.anc_enabled))
+                        self._battery_slave_obj.update(5.0, bool(self.anc_enabled))
+                        continue
+                    except Exception:
+                        # fall through to python based degradation
+                        pass
+
+                # python fallback counters (create if missing)
+                if not hasattr(self, "_py_batt_master"):
+                    self._py_batt_master = 100.0
+                    self._py_batt_slave = 100.0
+                self._py_batt_master = max(0.0, self._py_batt_master - 0.05)
+                self._py_batt_slave = max(0.0, self._py_batt_slave - 0.03)
 
     def get_battery_levels(self) -> Tuple[float, float]:
         with self._battery_lock:
-            return (float(self._battery_master), float(self._battery_slave))
+            if _HAVE_CPP and self._battery_master_obj is not None and self._battery_slave_obj is not None:
+                try:
+                    return (float(self._battery_master_obj.get_level()), float(self._battery_slave_obj.get_level()))
+                except Exception:
+                    pass
+            if hasattr(self, "_py_batt_master"):
+                return (float(self._py_batt_master), float(self._py_batt_slave))
+            return (100.0, 100.0)
 
     def shutdown(self) -> None:
-        """
-        Stop background threads cleanly (call before process exit if desired).
-        """
         self._battery_stop.set()
         if hasattr(self, "_battery_thread") and self._battery_thread.is_alive():
             self._battery_thread.join(timeout=1.0)

@@ -1,100 +1,107 @@
 # True Wireless Stereo (TWS) Simulation
 
-A simulation of True Wireless Stereo (TWS) earbuds, combining high-performance C++ digital signal processing (DSP) with an interactive Python GUI.  
-This project emulates core TWS audio behaviors: stereo WAV generation, channel splitting, adaptive noise cancellation (ANC), Bluetooth packet loss, jitter, and simple battery modeling, with a Matplotlib dashboard for control and visualization.
+An interactive **simulation of True Wireless Stereo earbuds**, combining high-performance **C++20 digital signal processing (DSP)** with a **Python GUI**.
 
-It demonstrates cross-language integration between **C++20 (pybind11 bindings)** and **Python 3**, showcasing real-time waveform analysis and DSP.
+The project emulates core TWS audio behaviors:
 
----
+* Stereo WAV generation (tones, sweeps, presets)
+* Channel splitting
+* Adaptive noise cancellation (ANC)
+* Bluetooth artifacts (packet loss, jitter)
+* Simplified battery drain model
 
-## Features
-
-### C++ DSP (`audio_processor`)
-- **Channel Splitting:** Extracts left/right channels from interleaved stereo buffers.
-- **ANC (Adaptive Noise Cancellation):** Implements an NLMS (Normalized Least Mean Squares) adaptive filter.  
-  - Left = signal + noise (primary)  
-  - Right = noise (reference)  
-  - Adaptive filter reduces noise on the left channel.
-- **Bluetooth Effects:**
-  - **Packet Loss:** Drops entire simulated packets with configurable probability.  
-  - **Jitter:** Randomly shifts packets by a few milliseconds.
-- **Numerical Stability:** Double-precision accumulators, leakage factor for long-term stability, configurable filter length and step size.
-
-### Python Orchestration
-- **Audio Generation:**
-  - Tones (440Hz/880Hz default, configurable).
-  - Frequency sweeps (logarithmic).
-  - Presets: white noise, pink noise, speech-like bursts, chord sequences.
-- **Playback:** Streams processed stereo audio via [`sounddevice`](https://python-sounddevice.readthedocs.io).
-- **GUI Dashboard:** Built with **Matplotlib widgets**, offering:
-  - Mode selection (Tone / Sweep / Preset).
-  - Frequency, duration, and parameter controls.
-  - Packet loss, jitter, ANC toggle.
-  - Live waveform visualization (Left/Right channels).
-  - Battery percentage bars (Master/Slave).
+A **Matplotlib dashboard** provides real-time visualization of audio waveforms, FFTs, and battery levels.
+This project also demonstrates **cross-language integration** between **C++ (pybind11 bindings)** and **Python 3** for real-time DSP.
 
 ---
 
-## Project Structure
+## ✨ Features
+
+### C++ DSP Modules
+
+* **Channel Splitting** — Extracts left/right channels from interleaved stereo streams.
+* **ANC (Adaptive Noise Cancellation)** — NLMS (Normalized Least Mean Squares) adaptive filter:
+  * Left channel = signal + noise (primary)
+  * Right channel = noise (reference)
+  * Learns to suppress noise on the left channel.
+* **Bluetooth Simulation**
+  * **Packet Loss**: Drops entire packets at configurable probability.
+  * **Jitter**: Random time shifts of audio packets.
+* **Numerical Stability** — Double precision accumulators, leakage factors, and configurable filter parameters.
+
+### Python Layer
+
+* **Audio Generation**
+  * Pure tones (default 440 Hz / 880 Hz).
+  * **Frequency sweeps** (logarithmic).
+  * **Presets**: white noise, pink noise, speech-like bursts, chord sequences.
+* **Playback** — Real-time audio streaming via [`sounddevice`](https://python-sounddevice.readthedocs.io).
+* **Interactive GUI** — Matplotlib dashboard with:
+  * Mode selection: *Tone / Sweep / Preset / ANC*
+  * Sliders for frequency, duration, packet loss, jitter
+  * Battery status bars (Master / Slave)
+  * Waveform & FFT visualization
+
+---
+
+## 📂 Project Structure
 
 ```
 tws_simulation/
-├── src/
-│   ├── audio_processor.cpp   # C++ DSP: ANC, packet loss, jitter
-│   └── audio_processor.hpp
-├── python/
-│   ├── gui.py          # GUI dashboard
-│   └── tws_simulator.py      # Python wrapper (calls C++ backend)
-├── outputs/                  # Generated WAVs (ignored in git)
-├── assets/                   # Temporary input assets (ignored in git)
-├── build/                    # Build artifacts (ignored in git)
-├── logs/                     # Log files (optional, ignored in git)
-├── .gitignore
-├── .clangd                   # clangd config (C++20)
+├── src/                    # C++ DSP modules (pybind11 extensions)
+│   ├── audio_processor.cpp   # ANC, packet loss, jitter
+│   ├── battery_model.cpp     # Simple battery model
+│   ├── wav_generator.cpp     # Tone/sweep/preset WAV generator
+│   └── *.hpp                 # Headers
+├── python/                 # Python layer
+│   ├── gui.py                # GUI dashboard (Matplotlib)
+│   └── tws_simulator.py      # Python wrapper & fallback simulator
+├── outputs/                 # Generated WAVs (ignored in git)
+├── assets/                  # Input assets (ignored)
+├── build/                   # Build artifacts
+├── logs/                    # Optional logs
+├── Makefile / CMakeLists    # Build system
 └── README.md
 ```
 
 ---
 
-## Data Flow
+## 🔄 Data Flow
 
 ```mermaid
 graph TD
-    A[Audio Generation: tone/sweep/preset] --> B[C++ DSP: ANC, packet loss, jitter]
-    B --> C[Python: Audio stream + plotting]
-    C --> D[Outputs: left.wav / right.wav]
-    C --> E[GUI: Matplotlib waveform + battery]
-    C --> F[Playback via sounddevice]
+    A[Audio Generation: Tone/Sweep/Preset] --> B[C++ DSP: ANC, packet loss, jitter]
+    B --> C[Python Layer: Processing + Plotting]
+    C --> D[WAV Outputs: left.wav / right.wav]
+    C --> E[GUI: Waveform + FFT + Battery]
+    C --> F[Playback: sounddevice]
 ```
 
 ---
 
-## Setup
+## ⚙️ Setup
 
 ### Prerequisites
 
-**OS:** Linux (tested on Fedora 40, should also work on Ubuntu/Arch).
+**OS:** Linux (tested on Fedora 40; should work on Ubuntu/Arch).
 
-**C++ Dependencies:**
+**C++ Dependencies**
 
-* g++ or clang with **C++20** support
+* g++ or clang with **C++20**
 * [pybind11](https://github.com/pybind/pybind11) headers
-* (Optional) [CMake](https://cmake.org) or [Bear](https://github.com/rizsotto/Bear) for generating `compile_commands.json`
+* (Optional) CMake or Bear for `compile_commands.json`
 
-**Python Dependencies:**
+**Python Dependencies**
 
-* Python 3.9+ (tested on Python 3.13)
-* Packages:
-
-  ```bash
-  pip install numpy matplotlib sounddevice scipy pybind11
-  ```
+```bash
+pip install numpy matplotlib sounddevice scipy pybind11
+```
 
 ---
 
-## Building
+## 🛠️ Building
 
-### Using CMake
+### With CMake
 
 ```bash
 mkdir -p build
@@ -103,94 +110,113 @@ cmake .. -DCMAKE_CXX_STANDARD=20 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 make
 ```
 
-This builds the `audio_processor` Python extension in `src/`.
-
-### Manual g++ build
+### With g++
 
 ```bash
 g++ -O3 -Wall -shared -std=c++20 -fPIC \
     -I/usr/include/python3.13 \
-    -I$(python3 -m pybind11 --includes | cut -d' ' -f1) \
+    $(python3 -m pybind11 --includes) \
     src/audio_processor.cpp \
-    -o audio_processor$(python3-config --extension-suffix)
+    -o src/audio_processor$(python3-config --extension-suffix)
 ```
 
 ---
----
-## Quick Start
+
+## 🚀 Quick Start
+
 ```bash
 git clone https://github.com/Spidy104/tws_simulation.git
 cd tws_simulation
 pip install -r requirements.txt
 python python/anim_plot.py
 ```
+
 ---
 
-## Usage
+## 🎛️ Usage (GUI)
 
-### GUI Mode
-
-Launch the dashboard:
+Run the dashboard:
 
 ```bash
 python python/anim_plot.py
 ```
 
-Controls:
+### Controls
 
-* **Mode:** Tone / Sweep / Preset
-* **Tone:** Set left/right frequencies
-* **Sweep:** Start/stop frequencies
-* **Preset:** White / Pink / Speech / Chord
-* **Duration:** 0.5–10s
-* **Packet loss:** % of dropped packets
-* **Jitter:** Random jitter in ms
-* **ANC:** Toggle adaptive noise cancellation
+* **Mode**: Tone / Sweep / Preset / ANC
+* **Tone**: Set left/right frequencies
+* **Sweep**: Define start & end frequencies
+* **Preset**: Choose White / Pink / Speech / Chord
+* **Duration**: 0.5–10s
+* **Packet loss**: % of dropped packets
+* **Jitter**: Random jitter (ms)
+* **ANC**: Toggle adaptive noise cancellation
 
-Outputs:
+### Keyboard Shortcuts
 
-* `outputs/left.wav`, `outputs/right.wav`: Processed stereo WAVs
-* Matplotlib window: Real-time waveform plots and battery bars
+* **Space** — Start/Stop simulation
+* **G** — Generate audio
+* **P** — Play audio
+
+### Outputs
+
+* `outputs/left.wav`, `outputs/right.wav` — processed audio
+* GUI window — waveform, FFT, battery visualization
 
 ---
 
-## Technical Details
+## 🔍 Technical Notes
 
-### ANC (Adaptive Noise Cancellation)
+### ANC
 
-* Algorithm: **Normalized LMS (NLMS)** adaptive filter
-* Configurable filter length (`L`), step size (`μ`), and leakage
-* Learns to subtract the reference noise (right channel) from the primary signal (left channel)
+* NLMS (Normalized LMS) adaptive filter
+* Configurable filter length, step size (`μ`), leakage
+* Learns noise reference (right channel) and cancels from primary (left)
 
-### Bluetooth Effects
+### Bluetooth Artifacts
 
-* **Packet Loss:** Bernoulli drop of 20ms blocks
-* **Jitter:** Random per-packet shifts, clipped at edges
+* **Packet Loss**: Bernoulli drop of 20ms blocks
+* **Jitter**: Random time shifts per packet
 
 ### Battery Model
 
-* Simplified: Fake percentage bars updated in GUI
-* Placeholder values (not energy-accurate)
+* Simplified toy model for GUI visualization
+* Master and Slave drain at different rates, ANC increases drain
 
 ---
 
-## Screenshots
+## 📸 Screenshot
 
-### Main Dashboard
 ![TWS Simulation Dashboard](image.png)
-*Interactive Matplotlib GUI with waveform visualization, ANC toggle, and battery status bars.*
----
-
-## Future Enhancements
-
-* Expose ANC parameters dynamically from GUI
-* Add more realistic battery drain model
-* Square/sawtooth waveform generation
-* Block-based ANC for efficiency
-* Real Bluetooth integration on Raspberry Pi
 
 ---
 
-## License
+## 🚧 Future Enhancements
 
-MIT License.
+* Expose ANC parameters dynamically in GUI
+* More realistic battery drain curves
+* Add square/sawtooth waveform generators
+* Optimize block-based ANC
+* Real Bluetooth integration (e.g., Raspberry Pi)
+
+---
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## 📜 License
+
+MIT License
+
+---
+
+## 📧 Contact
+
+Project Link: [https://github.com/Spidy104/tws_simulation](https://github.com/Spidy104/tws_simulation)
